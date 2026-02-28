@@ -22,7 +22,7 @@ from selenium.webdriver.support import expected_conditions as EC
 
 # ──────────────────── CONFIGURATION ────────────────────
 MENU_OPTION = "260209-omni-elo"
-WAIT_TIMEOUT = 5
+WAIT_TIMEOUT = 2
 TASK_DURATION_MINUTES = 55
 # ────────────────────────────────────────────────────────
 
@@ -46,10 +46,12 @@ def click_element_by_text(driver, text, tag="button", timeout=WAIT_TIMEOUT):
     Falls back to partial match, then JS click if needed.
     Returns True if clicked, False otherwise.
     """
-    wait = WebDriverWait(driver, timeout)
+    # Use shorter timeouts for fallback strategies (half the main timeout, min 2s)
+    fallback_timeout = max(2, timeout // 2)
 
     # 1. Exact text match
     try:
+        wait = WebDriverWait(driver, timeout)
         xpath = f"//{tag}[normalize-space(text())='{text}']"
         el = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
@@ -61,6 +63,7 @@ def click_element_by_text(driver, text, tag="button", timeout=WAIT_TIMEOUT):
 
     # 2. Partial / contains match
     try:
+        wait = WebDriverWait(driver, fallback_timeout)
         xpath = f"//{tag}[contains(normalize-space(text()),'{text}')]"
         el = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
@@ -70,7 +73,7 @@ def click_element_by_text(driver, text, tag="button", timeout=WAIT_TIMEOUT):
     except Exception:
         pass
 
-    # 3. Any element (not just <button>) — JS click as last resort
+    # 3. Any element (not just <button>) — JS click as last resort (instant, no wait)
     try:
         xpath = f"//*[contains(normalize-space(text()),'{text}')]"
         els = driver.find_elements(By.XPATH, xpath)
@@ -136,35 +139,54 @@ def main():
     print("=" * 50)
 
     driver = connect_to_chrome()
+    time.sleep(1)  # Let Chrome stabilize after connecting
     
-    # Find the actual Handshake tab by checking all window handles
+    # Find the tab that has the task button by scanning ALL tabs
     original_handle = None
-    for handle in driver.window_handles:
+    print(f"\n    Scanning {len(driver.window_handles)} open tab(s) for '{MENU_OPTION}'...")
+    
+    for i, handle in enumerate(driver.window_handles):
         driver.switch_to.window(handle)
+        driver.switch_to.default_content()
         url = driver.current_url
         title = driver.title
-        print(f"    Tab: {handle} — {title} ({url})")
-        if "handshake" in url.lower() or "handshake" in title.lower():
+        print(f"    [{i}] {title} — {url}")
+        
+        # Skip chrome:// internal pages
+        if url.startswith("chrome://"):
+            continue
+        
+        # Check if the task button is actually on this page
+        try:
+            driver.find_element(By.XPATH, f"//button[contains(text(),'{MENU_OPTION}')]")
             original_handle = handle
-            print(f"    [✓] Found Handshake tab: {handle}")
+            print(f"    [✓] Found '{MENU_OPTION}' button on this tab!")
+            break
+        except Exception:
+            # Button not on this page, also check by URL/title as backup
+            if "handshake" in url.lower() or "handshake" in title.lower():
+                original_handle = handle
+                print(f"    [~] Handshake tab (button not visible yet, may need loading)")
+                # Don't break — keep looking for a tab that actually has the button
     
-    # If no handshake tab found, pick the first non-chrome:// tab
     if not original_handle:
+        print(f"\n    [!] No tab with '{MENU_OPTION}' or 'handshake' found.")
+        print(f"    Falling back to first non-chrome:// tab...")
         for handle in driver.window_handles:
             driver.switch_to.window(handle)
-            url = driver.current_url
-            if not url.startswith("chrome://"):
+            if not driver.current_url.startswith("chrome://"):
                 original_handle = handle
-                print(f"    [✓] Using non-chrome tab: {handle} ({url})")
+                print(f"    [✓] Using: {driver.title} ({driver.current_url})")
                 break
     
-    # Last resort: just use the first handle
     if not original_handle:
-        original_handle = driver.window_handles[0]
-        print(f"    [!] Falling back to first tab: {original_handle}")
+        print(f"\n    [!] ERROR: No usable tab found. Make sure Handshake is open.")
+        sys.exit(1)
     
     driver.switch_to.window(original_handle)
-    print(f"    Active tab: {driver.title} — {driver.current_url}")
+    driver.switch_to.default_content()
+    print(f"\n    Active tab: {driver.title}")
+    print(f"    URL: {driver.current_url}")
 
     while True:
         print(f"\n{'='*50}")
@@ -247,7 +269,7 @@ def main():
 
         # ── Step 3: Click Submit ──
         print(f"\n[Step 3] Clicking 'Submit'...")
-        if click_element_by_text(driver, "Submit"):
+        if click_element_by_text(driver, "Submit", timeout=5):
             print(f"    [✓] Submitted.")
         else:
             print(f"    [✗] Could not find Submit button.")
@@ -255,7 +277,7 @@ def main():
 
         # ── Step 4: Click "Next task" ──
         print(f"\n[Step 4] Clicking 'Next task'...")
-        if click_element_by_text(driver, "Next task", timeout=10):
+        if click_element_by_text(driver, "Next task", timeout=5):
             print(f"    [✓] Clicked 'Next task'.")
         else:
             print(f"    [✗] 'Next task' not found.")
@@ -263,7 +285,7 @@ def main():
 
         # ── Step 5: Click "Open Multimango" ──
         print(f"\n[Step 5] Clicking 'Open Multimango'...")
-        if click_element_by_text(driver, "Open Multimango", timeout=10):
+        if click_element_by_text(driver, "Open Multimango", timeout=5):
             print(f"    [✓] Clicked 'Open Multimango'.")
         else:
             print(f"    [✗] 'Open Multimango' not found.")
