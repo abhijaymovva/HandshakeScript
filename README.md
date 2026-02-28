@@ -24,11 +24,17 @@ This script automates the submission process for Handshake AI tasks ("omni-tts-e
 
 ### Step 1: Launch Chrome with Remote Debugging
 
-You must launch Chrome from the terminal with a specific flag so the script can control it.
+You have two options:
 
-**Close all existing Chrome windows completely first.**
+**Option A: Use your Main Profile (Recommended so you stay logged in)**
+1.  **Quit ALL running Chrome instances** (Command + Q). This is critical.
+2.  Run this in your terminal:
+    ```bash
+    /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
+    ```
 
-Run this command in your terminal:
+**Option B: Use a Temporary Profile (Clean slate)**
+If Option A causes issues, use this command to start a fresh, temporary instance. Note: You will lose your profiles *in this window only* and have to log in again.
 ```bash
 /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir="/tmp/chrome_dev_test"
 ```
@@ -52,16 +58,12 @@ python handshake_submit.py
 
 1.  **Starts Loop**: Connects to your open Chrome window.
 2.  **Selects Task**: Clicks "omni-tts-elo".
-3.  **Fills Form**:
-    *   Fills the first text box with `X`.
-    *   Clicks "Submit" / "Save".
-    *   Fills subsequent text boxes with `0`.
-    *   Clicks "Submit" / "Save" after each one.
-4.  **Waits**: Once all fields are done and the final submission is complete, it starts a **55-minute countdown**.
-5.  **Resets**: After the wait, it clicks "Next Task", "Open Multimango", closes the popup tab, and restarts the cycle.
+3.  **Waits**: Starts a **1-minute countdown**.
+4.  **Submits**: Clicks "Submit" immediately after the wait.
+5.  **Resets**: Clicks "Next Task", "Open Multimango", closes the popup tab, and restarts the cycle.
 
 ## Troubleshooting
 
 *   **"Connection refused"**: Make sure Chrome was started with `--remote-debugging-port=9222` and is still running.
 *   **"Element not found"**: Ensure you are on the correct page. If the UI changes (button text, etc.), the script may need updating.
-*   **Stuck on "Waiting for input"**: Click inside the input box manually to help it along if it gets stuck.
+*   **Wait time**: The wait duration is set to 1 minute by default. You can change this in `handshake_submit.py` by editing `TASK_DURATION_MINUTES`.
