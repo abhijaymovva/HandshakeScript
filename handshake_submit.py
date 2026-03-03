@@ -11,6 +11,8 @@ Prerequisites:
 import time
 import sys
 import random
+import datetime
+from zoneinfo import ZoneInfo
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -24,7 +26,84 @@ from selenium.webdriver.support import expected_conditions as EC
 MENU_OPTION = "260209-omni-elo"
 WAIT_TIMEOUT = 2
 TASK_DURATION_MINUTES = 55
+TASKS_PER_DAY = 14
+CST = ZoneInfo("America/Chicago")
 # ────────────────────────────────────────────────────────
+
+
+def tasks_remaining_today() -> int:
+    """
+    Calculate how many TASK_DURATION_MINUTES tasks fit between now and the
+    next 1:00 AM CST cutoff, capped at TASKS_PER_DAY.
+    """
+    now = datetime.datetime.now(tz=CST)
+    cutoff = now.replace(hour=1, minute=0, second=0, microsecond=0)
+    # If 1 AM today is already past, the next cutoff is 1 AM tomorrow
+    if cutoff <= now:
+        cutoff += datetime.timedelta(days=1)
+    minutes_left = (cutoff - now).total_seconds() / 60
+    return min(TASKS_PER_DAY, int(minutes_left // TASK_DURATION_MINUTES))
+
+
+def get_next_start_time() -> datetime.datetime:
+    """
+    Return a random start time between 12:00 PM and 12:30 PM CST.
+    If that window has already passed today, schedule for tomorrow.
+    """
+    now = datetime.datetime.now(tz=CST)
+    offset_minutes = random.randint(0, 29)
+    offset_seconds = random.randint(0, 59)
+
+    candidate = now.replace(
+        hour=12, minute=offset_minutes, second=offset_seconds, microsecond=0
+    )
+
+    # Use today's candidate only if it's still in the future
+    if candidate > now:
+        return candidate
+
+    # Otherwise push to tomorrow
+    tomorrow = now.date() + datetime.timedelta(days=1)
+    return datetime.datetime(
+        tomorrow.year, tomorrow.month, tomorrow.day,
+        12, offset_minutes, offset_seconds,
+        tzinfo=CST,
+    )
+
+
+def wait_until(start_dt: datetime.datetime) -> None:
+    """Sleep until start_dt, printing a progress line every minute."""
+    now = datetime.datetime.now(tz=CST)
+    wait_secs = (start_dt - now).total_seconds()
+    if wait_secs <= 0:
+        return
+
+    print(
+        f"\n[SCHEDULE] Next session starts at: "
+        f"{start_dt.strftime('%Y-%m-%d %I:%M:%S %p %Z')}"
+    )
+    hrs, rem = divmod(int(wait_secs), 3600)
+    mins = rem // 60
+    print(f"[SCHEDULE] Waiting {hrs}h {mins}m ({int(wait_secs)}s)...")
+
+    CHUNK = 60  # update display every 60 s
+    while True:
+        now = datetime.datetime.now(tz=CST)
+        remaining = (start_dt - now).total_seconds()
+        if remaining <= 0:
+            break
+        sleep_for = min(CHUNK, remaining)
+        time.sleep(sleep_for)
+        remaining -= sleep_for
+        if remaining > 0:
+            hrs, rem = divmod(int(remaining), 3600)
+            mins = rem // 60
+            sys.stdout.write(
+                f"\r[SCHEDULE] Time until start: {hrs}h {mins}m remaining...   "
+            )
+            sys.stdout.flush()
+
+    print("\n[SCHEDULE] Starting session now!")
 
 
 def connect_to_chrome():
@@ -133,6 +212,125 @@ def countdown(minutes):
     print(f"\r    [✓] Done waiting.              ")
 
 
+def run_session(driver, original_handle, n_tasks: int) -> None:
+    """Run n_tasks task cycles back-to-back."""
+    print(f"\n{'='*50}")
+    print(
+        f"  Session — {n_tasks} task(s)  "
+        f"(started {datetime.datetime.now(tz=CST).strftime('%I:%M %p %Z')})"
+    )
+    print(f"{'='*50}")
+
+    for task_num in range(1, n_tasks + 1):
+        print(f"\n{'='*50}")
+        print(f"  Task {task_num}/{n_tasks}")
+        print(f"{'='*50}")
+
+        driver.switch_to.window(original_handle)
+        print(f"  Page: {driver.title}")
+        print(f"  URL:  {driver.current_url}")
+        driver.switch_to.default_content()
+
+        # ── Step 1: Click the task button ──
+        print(f"\n[Step 1] Clicking '{MENU_OPTION}'...")
+        if click_element_by_text(driver, MENU_OPTION):
+            print(f"    [✓] Selected task.")
+        else:
+            print(f"    [✗] Could not find '{MENU_OPTION}'. Refreshing and retrying...")
+            driver.refresh()
+            time.sleep(5)
+            if click_element_by_text(driver, MENU_OPTION):
+                print(f"    [✓] Selected task after refresh.")
+            else:
+                print(f"    [✗] Still can't find it. Skipping this task.")
+                time.sleep(10)
+                continue
+
+        time.sleep(2)
+
+        # ── Step 1b: Click the intermediate submit button ──
+        print(f"\n[Step 1b] Looking for intermediate submit button...")
+        time.sleep(2)
+        found_intermediate = False
+
+        try:
+            btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, "button[aria-label='Submit'], button[title='Submit']")
+            ))
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+            time.sleep(0.3)
+            btn.click()
+            print(f"    [✓] Clicked intermediate submit (aria-label/title).")
+            found_intermediate = True
+        except Exception:
+            pass
+
+        if not found_intermediate:
+            for label in ["Submit", "Continue", "Next", "Save"]:
+                if click_element_by_text(driver, label, timeout=3):
+                    print(f"    [✓] Clicked intermediate '{label}' (text).")
+                    found_intermediate = True
+                    break
+
+        if not found_intermediate:
+            try:
+                btns = driver.find_elements(By.CSS_SELECTOR, "button[type='submit'], input[type='submit']")
+                for btn in btns:
+                    if btn.is_displayed() and btn.is_enabled():
+                        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+                        time.sleep(0.3)
+                        btn.click()
+                        print(f"    [✓] Clicked intermediate submit (type=submit).")
+                        found_intermediate = True
+                        break
+            except Exception:
+                pass
+
+        if not found_intermediate:
+            print(f"    [—] No intermediate button found (may not be needed).")
+
+        # ── Step 2: Wait ──
+        countdown(TASK_DURATION_MINUTES)
+
+        # ── Step 3: Click Submit ──
+        print(f"\n[Step 3] Clicking 'Submit'...")
+        if click_element_by_text(driver, "Submit", timeout=5):
+            print(f"    [✓] Submitted.")
+        else:
+            print(f"    [✗] Could not find Submit button.")
+        time.sleep(2)
+
+        # ── Step 4: Click 'Next task' ──
+        print(f"\n[Step 4] Clicking 'Next task'...")
+        if click_element_by_text(driver, "Next task", timeout=5):
+            print(f"    [✓] Clicked 'Next task'.")
+        else:
+            print(f"    [✗] 'Next task' not found.")
+        time.sleep(2)
+
+        # ── Step 5: Click 'Open Multimango' ──
+        print(f"\n[Step 5] Clicking 'Open Multimango'...")
+        if click_element_by_text(driver, "Open Multimango", timeout=5):
+            print(f"    [✓] Clicked 'Open Multimango'.")
+        else:
+            print(f"    [✗] 'Open Multimango' not found.")
+        time.sleep(3)
+
+        # ── Step 6: Close the popup tab and switch back ──
+        print(f"\n[Step 6] Closing popup tab...")
+        close_newest_tab(driver, original_handle)
+
+        print(f"\n[✓] Task {task_num}/{n_tasks} complete.\n")
+        time.sleep(3)
+
+    print(
+        f"\n{'='*50}\n"
+        f"  [✓] Session complete — {n_tasks}/{n_tasks} tasks submitted."
+        f"\n  Finished at: {datetime.datetime.now(tz=CST).strftime('%I:%M %p %Z')}"
+        f"\n{'='*50}"
+    )
+
+
 def main():
     print("=" * 50)
     print("  Handshake AI Task Submission")
@@ -188,115 +386,22 @@ def main():
     print(f"\n    Active tab: {driver.title}")
     print(f"    URL: {driver.current_url}")
 
+    # ── First run: start immediately, only do as many tasks as fit before 1 AM ──
+    n_today = tasks_remaining_today()
+    now_cst = datetime.datetime.now(tz=CST)
+    print(f"\n[SCHEDULE] Current time: {now_cst.strftime('%I:%M %p %Z')}")
+    print(f"[SCHEDULE] Tasks that fit before 1:00 AM CST today: {n_today}")
+
+    if n_today > 0:
+        run_session(driver, original_handle, n_today)
+    else:
+        print("[SCHEDULE] No tasks fit before 1 AM — skipping to next noon window.")
+
+    # ── Daily loop: wait for noon, run full 14 tasks, repeat ──
     while True:
-        print(f"\n{'='*50}")
-        print(f"  Starting new cycle...")
-        print(f"{'='*50}")
-        # Always make sure we're on the original Handshake tab
-        driver.switch_to.window(original_handle)
-        print(f"  Page: {driver.title}")
-        print(f"  URL:  {driver.current_url}")
-        
-        # Switch out of any iframes back to main page content
-        driver.switch_to.default_content()
-
-        # ── Step 1: Click the task button ──
-        print(f"\n[Step 1] Clicking '{MENU_OPTION}'...")
-        
-       
-        
-        if click_element_by_text(driver, MENU_OPTION):
-            print(f"    [✓] Selected task.")
-        else:
-            print(f"    [✗] Could not find '{MENU_OPTION}'. Refreshing and retrying...")
-            driver.refresh()
-            time.sleep(5)
-            if click_element_by_text(driver, MENU_OPTION):
-                print(f"    [✓] Selected task after refresh.")
-            else:
-                print(f"    [✗] Still can't find it. Will retry next cycle.")
-                time.sleep(10)
-                continue
-
-        time.sleep(2)
-
-        # ── Step 1b: Click the intermediate submit button (small arrow icon, bottom-right) ──
-        print(f"\n[Step 1b] Looking for intermediate submit button...")
-        time.sleep(2)
-        found_intermediate = False
-
-        # Try by aria-label (icon button with hover tooltip "Submit")
-        try:
-            btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable(
-                (By.CSS_SELECTOR, "button[aria-label='Submit'], button[title='Submit']")
-            ))
-            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
-            time.sleep(0.3)
-            btn.click()
-            print(f"    [✓] Clicked intermediate submit (aria-label/title).")
-            found_intermediate = True
-        except Exception:
-            pass
-
-        # Fallback: try by visible text
-        if not found_intermediate:
-            for label in ["Submit", "Continue", "Next", "Save"]:
-                if click_element_by_text(driver, label, timeout=3):
-                    print(f"    [✓] Clicked intermediate '{label}' (text).")
-                    found_intermediate = True
-                    break
-
-        # Last resort: try type=submit
-        if not found_intermediate:
-            try:
-                btns = driver.find_elements(By.CSS_SELECTOR, "button[type='submit'], input[type='submit']")
-                for btn in btns:
-                    if btn.is_displayed() and btn.is_enabled():
-                        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
-                        time.sleep(0.3)
-                        btn.click()
-                        print(f"    [✓] Clicked intermediate submit (type=submit).")
-                        found_intermediate = True
-                        break
-            except Exception:
-                pass
-
-        if not found_intermediate:
-            print(f"    [—] No intermediate button found (may not be needed).")
-
-        # ── Step 2: Wait ──
-        countdown(TASK_DURATION_MINUTES)
-
-        # ── Step 3: Click Submit ──
-        print(f"\n[Step 3] Clicking 'Submit'...")
-        if click_element_by_text(driver, "Submit", timeout=5):
-            print(f"    [✓] Submitted.")
-        else:
-            print(f"    [✗] Could not find Submit button.")
-        time.sleep(2)
-
-        # ── Step 4: Click "Next task" ──
-        print(f"\n[Step 4] Clicking 'Next task'...")
-        if click_element_by_text(driver, "Next task", timeout=5):
-            print(f"    [✓] Clicked 'Next task'.")
-        else:
-            print(f"    [✗] 'Next task' not found.")
-        time.sleep(2)
-
-        # ── Step 5: Click "Open Multimango" ──
-        print(f"\n[Step 5] Clicking 'Open Multimango'...")
-        if click_element_by_text(driver, "Open Multimango", timeout=5):
-            print(f"    [✓] Clicked 'Open Multimango'.")
-        else:
-            print(f"    [✗] 'Open Multimango' not found.")
-        time.sleep(3)
-
-        # ── Step 6: Close the popup tab and switch back to original Handshake tab ──
-        print(f"\n[Step 6] Closing popup tab...")
-        close_newest_tab(driver, original_handle)
-
-        print(f"\n[✓] Cycle complete.\n")
-        time.sleep(3)
+        start_dt = get_next_start_time()
+        wait_until(start_dt)
+        run_session(driver, original_handle, TASKS_PER_DAY)
 
 
 if __name__ == "__main__":
