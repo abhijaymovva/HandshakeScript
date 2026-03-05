@@ -12,7 +12,15 @@ import time
 import sys
 import random
 import datetime
-from zoneinfo import ZoneInfo
+
+# Try to use zoneinfo (Python 3.9+), fall back to pytz
+try:
+    from zoneinfo import ZoneInfo
+    CST = ZoneInfo("America/Chicago")
+except (ImportError, Exception):
+    import pytz
+    CST = pytz.timezone("America/Chicago")
+
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -27,7 +35,6 @@ MENU_OPTION = "260209-omni-elo"
 WAIT_TIMEOUT = 2
 TASK_DURATION_MINUTES = 55
 TASKS_PER_DAY = 14
-CST = ZoneInfo("America/Chicago")
 # ────────────────────────────────────────────────────────
 
 
